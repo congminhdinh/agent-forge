@@ -1,0 +1,28 @@
+{
+  "name": "agent-forge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "build:api": "npm run build -w apps/api",
+    "build:web": "npm run build -w apps/web",
+    "dev:api": "npm run start:dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "test:api": "npm run test -w apps/api",
+    "test:e2e:api": "npm run test:e2e -w apps/api"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/congminhdinh/agent-forge.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/congminhdinh/agent-forge/issues"
+  },
+  "homepage": "https://github.com/congminhdinh/agent-forge#readme",
+  "workspaces": ["apps/*"]
+}

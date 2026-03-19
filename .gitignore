@@ -1,0 +1,12 @@
+node_modules/
+apps/*/node_modules/
+apps/web/.nuxt/
+apps/web/.output/
+apps/web/.data/
+apps/api/dist/
+apps/api/coverage/
+apps/api/.agentforge-api.sqlite
+apps/api/.env
+apps/web/.env
+.env
+npm-debug.log*
