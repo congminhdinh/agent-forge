@@ -19,3 +19,8 @@
 - Task reference: `phase-1-mvp`
 - Category: feedback
 - Phase 1 is now implemented in-source: API modules, Nuxt dashboard, env files, Docker Compose, cleanup tooling, and verification docs are all in place.
+
+### 2026-03-20
+- Task reference: `phase-1-mvp`
+- Category: bug fix
+- The Nuxt app shell returned a plain object full of refs from `useAgentForge()` and passed nested ref values into child props during SSR. Wrapping the shell state with `reactive(useAgentForge())` in `apps/web/app/app.vue` restored ref unwrapping and fixed the `project.tasks.length` crash in `ProjectSidebar.vue`.

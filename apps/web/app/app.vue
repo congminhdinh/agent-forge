@@ -7,7 +7,7 @@ import RoleStudio from './components/RoleStudio.vue';
 import TaskOutputViewer from './components/TaskOutputViewer.vue';
 import { useAgentForge } from './composables/useAgentForge';
 
-const app = useAgentForge();
+const app = reactive(useAgentForge());
 
 onMounted(() => {
   app.initializeApp();
