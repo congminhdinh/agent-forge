@@ -26,6 +26,18 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   externalId!: string | null;
 
+  @Column({ default: 'pro' })
+  subscriptionTier!: string;
+
+  @Column({ default: 'active' })
+  subscriptionStatus!: string;
+
+  @Column({ type: 'int', default: 5 })
+  maxConcurrentSessions!: number;
+
+  @Column({ type: 'int', default: 50 })
+  maxWeeklyTasks!: number;
+
   @CreateDateColumn()
   createdAt!: Date;
 

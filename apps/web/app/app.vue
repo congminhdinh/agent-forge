@@ -5,6 +5,7 @@ import KanbanBoard from './components/KanbanBoard.vue';
 import ProjectSidebar from './components/ProjectSidebar.vue';
 import RoleStudio from './components/RoleStudio.vue';
 import TaskOutputViewer from './components/TaskOutputViewer.vue';
+import UsagePanel from './components/UsagePanel.vue';
 import { useAgentForge } from './composables/useAgentForge';
 
 const app = reactive(useAgentForge());
@@ -14,9 +15,9 @@ onMounted(() => {
 });
 
 useSeoMeta({
-  title: 'AgentForge Phase 1',
+  title: 'AgentForge Phase 2',
   description:
-    'Project CRUD, kanban orchestration, single-agent dispatch, and BYOK management.',
+    'Multi-agent orchestration, review gating, live updates, and quota visibility.',
 });
 </script>
 
@@ -37,10 +38,16 @@ useSeoMeta({
       <header class="topbar">
         <div>
           <p class="eyebrow">AgentForge</p>
-          <h1>Phase 1 MVP Workspace</h1>
+          <h1>Phase 2 Review Workspace</h1>
         </div>
         <div class="topbar-meta">
-          <p>{{ app.session.displayName }} · {{ app.projectCountLabel }}</p>
+          <p>{{ app.session.displayName }} Â· {{ app.projectCountLabel }}</p>
+          <p>
+            {{ app.usage?.sessions.active || 0 }} / {{ app.usage?.sessions.limit || 0 }}
+            sessions Â·
+            {{ app.usage?.weekly_tasks.used || 0 }} / {{ app.usage?.weekly_tasks.limit || 0 }}
+            weekly tasks
+          </p>
           <p>GitHub OAuth {{ app.githubConfigured ? 'ready' : 'not configured' }}</p>
         </div>
         <button class="ghost-button" @click="app.clearSession">Sign out</button>
@@ -77,6 +84,18 @@ useSeoMeta({
         />
 
         <aside class="details-column">
+          <TaskOutputViewer
+            :format-date="app.formatDate"
+            :loading="app.loading"
+            :project="app.selectedProject"
+            :review-form="app.reviewForm"
+            :selected-task="app.selectedTask"
+            @submit-review="app.submitReview"
+            @update-task="app.updateTask"
+          />
+
+          <UsagePanel :format-date="app.formatDate" :usage="app.usage" />
+
           <RoleStudio
             :editing-role-id="app.editingRoleId"
             :loading="app.loading"
@@ -98,13 +117,6 @@ useSeoMeta({
             :loading="app.loading"
             @remove-key="app.removeApiKey"
             @save-key="app.saveApiKey"
-          />
-
-          <TaskOutputViewer
-            :format-date="app.formatDate"
-            :project="app.selectedProject"
-            :selected-task="app.selectedTask"
-            @update-task="app.updateTask"
           />
         </aside>
       </section>
@@ -237,6 +249,10 @@ useSeoMeta({
   align-items: center;
 }
 
+:global(.compact-head) {
+  margin-bottom: 0.2rem;
+}
+
 :global(.stack) {
   display: grid;
   gap: 0.85rem;
@@ -366,6 +382,16 @@ useSeoMeta({
   color: #ffd58f;
 }
 
+:global(.status-pill) {
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  background: rgba(88, 179, 255, 0.18);
+  color: #c4e6ff;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+}
+
 :global(.task-actions) {
   font-size: 0.82rem;
   color: rgba(247, 243, 236, 0.7);
@@ -380,6 +406,10 @@ useSeoMeta({
   margin-top: 0.8rem;
 }
 
+:global(.review-actions) {
+  margin-top: 0.6rem;
+}
+
 :global(.run-meta) {
   display: flex;
   flex-wrap: wrap;
@@ -387,6 +417,39 @@ useSeoMeta({
   margin: 1rem 0;
   color: rgba(247, 243, 236, 0.72);
   font-size: 0.86rem;
+}
+
+:global(.stream-item) {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+:global(.usage-grid) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+:global(.usage-stat) {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.9rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+:global(.usage-stat span) {
+  color: rgba(247, 243, 236, 0.68);
+}
+
+:global(.mono) {
+  font-family: "Cascadia Mono", "SFMono-Regular", monospace;
+  word-break: break-word;
 }
 
 :global(.output-panel) {
@@ -501,7 +564,8 @@ useSeoMeta({
 
   :global(.inline-fields),
   :global(.board-grid),
-  :global(.auth-shell) {
+  :global(.auth-shell),
+  :global(.usage-grid) {
     grid-template-columns: 1fr;
   }
 

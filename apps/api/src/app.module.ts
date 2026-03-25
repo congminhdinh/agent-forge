@@ -6,8 +6,11 @@ import { AgentRun } from './agent/agent-run.entity';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { RealtimeController } from './realtime.controller';
+import { RealtimeService } from './realtime.service';
 import { ApiKeySetting } from './settings/api-key-setting.entity';
 import { SettingsModule } from './settings/settings.module';
+import { UsageController } from './usage.controller';
 import { User } from './users/user.entity';
 import { Project } from './workspace/project.entity';
 import { AgentRole } from './workspace/role.entity';
@@ -51,7 +54,7 @@ import { WorkspaceModule } from './workspace/workspace.module';
     WorkspaceModule,
     AgentModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [AppController, RealtimeController, UsageController],
+  providers: [AppService, RealtimeService],
 })
 export class AppModule {}

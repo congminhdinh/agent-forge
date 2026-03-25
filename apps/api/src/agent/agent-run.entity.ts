@@ -47,6 +47,18 @@ export class AgentRun {
   @Column({ type: 'text', nullable: true })
   error!: string | null;
 
+  @Column({ type: 'varchar', nullable: true })
+  handoffTarget!: string | null;
+
+  @Column({ default: 'none' })
+  sandboxMode!: string;
+
+  @Column({ default: 'not_required' })
+  sandboxStatus!: string;
+
+  @Column({ type: 'simple-json', nullable: true })
+  sandboxDetails!: Record<string, unknown> | null;
+
   @Column({ type: 'datetime', nullable: true })
   finishedAt!: Date | null;
 

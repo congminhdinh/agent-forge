@@ -43,6 +43,36 @@ export class TaskItem {
   @Column({ type: 'text', nullable: true })
   latestSummary!: string | null;
 
+  @Column({ type: 'text', nullable: true })
+  reviewFeedback!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  reviewRequestedRoleSlug!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  githubBranch!: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  githubPrNumber!: number | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  githubPrUrl!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  githubStatus!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  githubStatusReason!: string | null;
+
+  @Column({ type: 'simple-json', default: '[]' })
+  messages!: Array<Record<string, unknown>>;
+
+  @Column({ type: 'simple-json', default: '[]' })
+  reviews!: Array<Record<string, unknown>>;
+
+  @Column({ type: 'simple-json', default: '[]' })
+  transitions!: Array<Record<string, unknown>>;
+
   @CreateDateColumn()
   createdAt!: Date;
 

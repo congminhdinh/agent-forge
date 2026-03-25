@@ -16,12 +16,11 @@ defineEmits<{
 <template>
   <main class="auth-shell">
     <section class="hero-panel">
-      <p class="eyebrow">AgentForge Phase 1</p>
-      <h1>Shape work into a board, hand it to an agent, and keep the output reviewable.</h1>
+      <p class="eyebrow">AgentForge Phase 2</p>
+      <h1>Run multi-agent flows, hold the line at review, and keep the whole chain visible.</h1>
       <p class="hero-copy">
-        This MVP runs with a local development sign-in, project CRUD, role
-        configuration, task dispatch, BYOK model routing, and an output viewer
-        ready for review.
+        This workspace now tracks inter-agent handoffs, quota usage, human review
+        decisions, and GitHub handoff metadata on the same board.
       </p>
     </section>
 

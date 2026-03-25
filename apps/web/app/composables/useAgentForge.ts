@@ -31,6 +31,50 @@ export type AgentRun = {
   summary: string | null;
   filesChanged: string[];
   error: string | null;
+  handoffTarget: string | null;
+  sandboxMode: string;
+  sandboxStatus: string;
+  sandboxDetails: Record<string, unknown> | null;
+  createdAt: string;
+  finishedAt: string | null;
+  role: RoleRecord | null;
+};
+
+export type TaskMessageRecord = {
+  id: string;
+  from_role: string;
+  to_role: string | null;
+  message_type: string;
+  output: string;
+  blockers: string[];
+  next_action: string | null;
+  files_changed: string[];
+  error_context: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type TaskReviewRecord = {
+  id: string;
+  action: 'approve' | 'request_changes' | 'reject';
+  comment: string;
+  targetRoleSlug: string | null;
+  diffSnapshot: string | null;
+  reviewer: {
+    id: string;
+    displayName: string;
+    email: string;
+  };
+  createdAt: string;
+};
+
+export type TaskTransitionRecord = {
+  id: string;
+  fromStatus: string | null;
+  toStatus: string;
+  triggeredBy: 'agent' | 'human' | 'system';
+  actorId: string;
+  reason: string | null;
   createdAt: string;
 };
 
@@ -44,7 +88,20 @@ export type TaskRecord = {
   assignedRole: RoleRecord | null;
   modelOverride: string | null;
   latestSummary: string | null;
+  reviewFeedback: string | null;
+  reviewRequestedRoleSlug: string | null;
+  github: {
+    repo: string | null;
+    branch: string | null;
+    prNumber: number | null;
+    prUrl: string | null;
+    status: string | null;
+    statusReason: string | null;
+  };
   runs: AgentRun[];
+  messages: TaskMessageRecord[];
+  reviews: TaskReviewRecord[];
+  transitions: TaskTransitionRecord[];
 };
 
 export type ProjectRecord = {
@@ -61,6 +118,31 @@ export type ApiKeyState = {
   provider: 'openai' | 'anthropic';
   configured: boolean;
   updatedAt: string | null;
+};
+
+export type UsageSnapshot = {
+  tier: string;
+  status: string;
+  sessions: {
+    active: number;
+    limit: number;
+  };
+  weekly_tasks: {
+    used: number;
+    limit: number;
+    resetsAt: string;
+  };
+  recent_sessions: Array<{
+    taskId: string;
+    taskTitle: string;
+    role: string;
+    model: string;
+    status: string;
+    summary: string | null;
+    durationSec: number | null;
+    createdAt: string;
+    finishedAt: string | null;
+  }>;
 };
 
 export const boardColumns = [
@@ -82,6 +164,7 @@ export const useAgentForge = () => {
   const session = ref<AuthUser | null>(null);
   const githubConfigured = ref(false);
   const apiKeys = ref<ApiKeyState[]>([]);
+  const usage = ref<UsageSnapshot | null>(null);
   const projects = ref<ProjectRecord[]>([]);
   const selectedProjectId = ref<string | null>(null);
   const selectedTaskId = ref<string | null>(null);
@@ -90,6 +173,10 @@ export const useAgentForge = () => {
   const actionMessage = ref('');
   const errorMessage = ref('');
   const draggingTaskId = ref<string | null>(null);
+
+  let projectStream: EventSource | null = null;
+  let taskStream: EventSource | null = null;
+  let usageStream: EventSource | null = null;
 
   const loginForm = reactive({
     email: 'demo@agentforge.local',
@@ -116,7 +203,12 @@ export const useAgentForge = () => {
     displayName: '',
     modelPreference: 'openai:gpt-4.1-mini',
     systemPromptTemplate: '',
-    toolAccessPolicy: 'file_system',
+    toolAccessPolicy: 'file_system, code_execution, github_write',
+  });
+
+  const reviewForm = reactive({
+    comment: '',
+    targetRoleSlug: 'developer',
   });
 
   const keyInputs = reactive({
@@ -161,14 +253,27 @@ export const useAgentForge = () => {
     }
   }
 
+  function closeStreams() {
+    projectStream?.close();
+    taskStream?.close();
+    usageStream?.close();
+    projectStream = null;
+    taskStream = null;
+    usageStream = null;
+  }
+
   function clearSession() {
+    closeStreams();
     token.value = '';
     session.value = null;
     githubConfigured.value = false;
     projects.value = [];
+    usage.value = null;
     selectedProjectId.value = null;
     selectedTaskId.value = null;
     apiKeys.value = [];
+    reviewForm.comment = '';
+    reviewForm.targetRoleSlug = 'developer';
     if (import.meta.client) {
       localStorage.removeItem('agent-forge-token');
     }
@@ -205,7 +310,8 @@ export const useAgentForge = () => {
       const auth = await apiFetch<AuthResponse>('/auth/session');
       session.value = auth.user;
       githubConfigured.value = auth.githubConfigured;
-      await Promise.all([refreshProjects(), refreshApiKeys()]);
+      await Promise.all([refreshProjects(), refreshApiKeys(), refreshUsage()]);
+      syncStreams();
     } catch {
       clearSession();
     }
@@ -222,8 +328,9 @@ export const useAgentForge = () => {
       rememberToken(auth.accessToken);
       session.value = auth.user;
       githubConfigured.value = auth.githubConfigured;
-      actionMessage.value = 'Signed in with the local Phase 1 development flow.';
-      await Promise.all([refreshProjects(), refreshApiKeys()]);
+      actionMessage.value = 'Signed in with the local Phase 2 development flow.';
+      await Promise.all([refreshProjects(), refreshApiKeys(), refreshUsage()]);
+      syncStreams();
     } catch (error) {
       errorMessage.value =
         error instanceof Error ? error.message : 'Unable to sign in.';
@@ -262,6 +369,14 @@ export const useAgentForge = () => {
     }
 
     apiKeys.value = await apiFetch<ApiKeyState[]>('/settings/api-keys');
+  }
+
+  async function refreshUsage() {
+    if (!token.value) {
+      return;
+    }
+
+    usage.value = await apiFetch<UsageSnapshot>('/subscriptions/me/usage');
   }
 
   function resetProjectForm() {
@@ -336,6 +451,7 @@ export const useAgentForge = () => {
         method: 'DELETE',
       });
       await refreshProjects();
+      await refreshUsage();
       actionMessage.value = `Deleted project "${deletedName}".`;
       resetProjectForm();
     } catch (error) {
@@ -389,6 +505,7 @@ export const useAgentForge = () => {
         body: payload,
       });
       await refreshProjects();
+      await refreshUsage();
     } catch (error) {
       errorMessage.value =
         error instanceof Error ? error.message : 'Unable to update task.';
@@ -404,13 +521,48 @@ export const useAgentForge = () => {
       await apiFetch(`/tasks/${taskId}/dispatch`, {
         method: 'POST',
       });
-      await refreshProjects();
+      await Promise.all([refreshProjects(), refreshUsage()]);
       selectedTaskId.value = taskId;
       actionMessage.value =
-        'Single-agent dispatch finished and the latest output is ready to review.';
+        'The multi-agent workflow ran and the task is ready for review.';
     } catch (error) {
       errorMessage.value =
         error instanceof Error ? error.message : 'Unable to dispatch task.';
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function submitReview(action: 'approve' | 'request_changes' | 'reject') {
+    if (!selectedTask.value) {
+      return;
+    }
+
+    loading.value = true;
+    errorMessage.value = '';
+    try {
+      await apiFetch(`/tasks/${selectedTask.value.id}/review`, {
+        method: 'POST',
+        body: {
+          action,
+          comment: reviewForm.comment || undefined,
+          targetRoleSlug:
+            action === 'request_changes'
+              ? reviewForm.targetRoleSlug || undefined
+              : undefined,
+        },
+      });
+      await Promise.all([refreshProjects(), refreshUsage()]);
+      actionMessage.value =
+        action === 'approve'
+          ? 'Approved the task and closed the review gate.'
+          : action === 'reject'
+            ? 'Rejected the task.'
+            : 'Requested changes and resumed the agent workflow.';
+      reviewForm.comment = '';
+    } catch (error) {
+      errorMessage.value =
+        error instanceof Error ? error.message : 'Unable to submit the review.';
     } finally {
       loading.value = false;
     }
@@ -423,7 +575,7 @@ export const useAgentForge = () => {
       roleForm.displayName = '';
       roleForm.modelPreference = 'openai:gpt-4.1-mini';
       roleForm.systemPromptTemplate = '';
-      roleForm.toolAccessPolicy = 'file_system';
+      roleForm.toolAccessPolicy = 'file_system, code_execution, github_write';
       return;
     }
 
@@ -561,13 +713,67 @@ export const useAgentForge = () => {
 
     const taskId = draggingTaskId.value;
     draggingTaskId.value = null;
+    if (status === 'in_progress') {
+      await dispatchTask(taskId);
+      return;
+    }
+
     await updateTask(taskId, { status });
+  }
+
+  function buildStreamUrl(path: string) {
+    const url = new URL(`${apiBase.value}${path}`);
+    url.searchParams.set('token', token.value);
+    return url.toString();
+  }
+
+  function createEventSource(path: string, onEvent: () => void) {
+    if (!import.meta.client || !token.value) {
+      return null;
+    }
+
+    const source = new EventSource(buildStreamUrl(path));
+    source.onmessage = () => {
+      onEvent();
+    };
+    return source;
+  }
+
+  function syncStreams() {
+    closeStreams();
+    if (!token.value) {
+      return;
+    }
+
+    usageStream = createEventSource('/events/usage', () => {
+      refreshUsage();
+    });
+
+    if (selectedProjectId.value) {
+      projectStream = createEventSource(
+        `/events/projects/${selectedProjectId.value}`,
+        () => {
+          refreshProjects();
+        },
+      );
+    }
+
+    if (selectedTaskId.value) {
+      taskStream = createEventSource(`/events/tasks/${selectedTaskId.value}`, () => {
+        refreshProjects();
+      });
+    }
   }
 
   watch(selectedProjectId, () => {
     fillProjectForm();
     resetTaskForm();
     selectedTaskId.value = selectedProject.value?.tasks[0]?.id ?? null;
+    syncStreams();
+  });
+
+  watch(selectedTaskId, () => {
+    syncStreams();
   });
 
   watch(
@@ -580,9 +786,39 @@ export const useAgentForge = () => {
       if (!project.roles.some((role) => role.id === editingRoleId.value)) {
         openRoleEditor(project.roles[0]);
       }
+
+      const defaultRole =
+        project.roles.find((role) => role.slug === 'developer')?.slug ??
+        project.roles[0]?.slug ??
+        'developer';
+      if (!project.roles.some((role) => role.slug === reviewForm.targetRoleSlug)) {
+        reviewForm.targetRoleSlug = defaultRole;
+      }
     },
     { immediate: true },
   );
+
+  watch(
+    selectedTask,
+    (task) => {
+      if (!task) {
+        reviewForm.comment = '';
+        return;
+      }
+
+      reviewForm.targetRoleSlug =
+        task.reviewRequestedRoleSlug ||
+        reviewForm.targetRoleSlug ||
+        selectedProject.value?.roles.find((role) => role.slug === 'developer')?.slug ||
+        selectedProject.value?.roles[0]?.slug ||
+        'developer';
+    },
+    { immediate: true },
+  );
+
+  onBeforeUnmount(() => {
+    closeStreams();
+  });
 
   return {
     actionMessage,
@@ -609,9 +845,11 @@ export const useAgentForge = () => {
     projectForm,
     projects,
     refreshProjects,
+    refreshUsage,
     removeApiKey,
     removeRole,
     resetProjectForm,
+    reviewForm,
     roleForm,
     saveApiKey,
     saveRole,
@@ -621,11 +859,13 @@ export const useAgentForge = () => {
     selectedTask,
     selectedTaskId,
     session,
+    submitReview,
     taskForm,
     tasksForStatus,
     token,
     updateProject,
     updateTask,
+    usage,
     visibleTasks,
   };
 };

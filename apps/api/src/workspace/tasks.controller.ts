@@ -11,7 +11,7 @@ import { AgentService } from '../agent/agent.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { User } from '../users/user.entity';
-import { CreateTaskDto, UpdateTaskDto } from './workspace.dto';
+import { CreateTaskDto, SubmitReviewDto, UpdateTaskDto } from './workspace.dto';
 import { WorkspaceService } from './workspace.service';
 
 @UseGuards(JwtAuthGuard)
@@ -53,5 +53,19 @@ export class TasksController {
   @Post('tasks/:taskId/dispatch')
   dispatchTask(@CurrentUser() user: User, @Param('taskId') taskId: string) {
     return this.agentService.dispatchTask(user, taskId);
+  }
+
+  @Get('tasks/:taskId/reviews')
+  listReviews(@CurrentUser() user: User, @Param('taskId') taskId: string) {
+    return this.agentService.listReviews(user, taskId);
+  }
+
+  @Post('tasks/:taskId/review')
+  submitReview(
+    @CurrentUser() user: User,
+    @Param('taskId') taskId: string,
+    @Body() body: SubmitReviewDto,
+  ) {
+    return this.agentService.submitReview(user, taskId, body);
   }
 }

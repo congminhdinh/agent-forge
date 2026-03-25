@@ -27,6 +27,10 @@ export const serializeRun = (run: AgentRun) => ({
   summary: run.summary,
   filesChanged: run.filesChanged ?? [],
   error: run.error,
+  handoffTarget: run.handoffTarget,
+  sandboxMode: run.sandboxMode,
+  sandboxStatus: run.sandboxStatus,
+  sandboxDetails: run.sandboxDetails,
   finishedAt: run.finishedAt,
   createdAt: run.createdAt,
   updatedAt: run.updatedAt,
@@ -42,6 +46,16 @@ export const serializeTask = (task: TaskItem) => ({
   assignedRole: task.assignedRole ? serializeRole(task.assignedRole) : null,
   modelOverride: task.modelOverride,
   latestSummary: task.latestSummary,
+  reviewFeedback: task.reviewFeedback,
+  reviewRequestedRoleSlug: task.reviewRequestedRoleSlug,
+  github: {
+    repo: task.project?.githubRepo ?? null,
+    branch: task.githubBranch,
+    prNumber: task.githubPrNumber,
+    prUrl: task.githubPrUrl,
+    status: task.githubStatus,
+    statusReason: task.githubStatusReason,
+  },
   runs: (task.runs ?? [])
     .slice()
     .sort(
@@ -49,6 +63,27 @@ export const serializeTask = (task: TaskItem) => ({
         new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
     )
     .map(serializeRun),
+  messages: (task.messages ?? [])
+    .slice()
+    .sort(
+      (left, right) =>
+        new Date(left.createdAt as string).getTime() -
+        new Date(right.createdAt as string).getTime(),
+    ),
+  reviews: (task.reviews ?? [])
+    .slice()
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt as string).getTime() -
+        new Date(left.createdAt as string).getTime(),
+    ),
+  transitions: (task.transitions ?? [])
+    .slice()
+    .sort(
+      (left, right) =>
+        new Date(left.createdAt as string).getTime() -
+        new Date(right.createdAt as string).getTime(),
+    ),
   createdAt: task.createdAt,
   updatedAt: task.updatedAt,
 });

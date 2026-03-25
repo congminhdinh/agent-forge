@@ -27,6 +27,6 @@ import { JwtStrategy } from './jwt.strategy';
     JwtAuthGuard,
     GithubAuthGuard,
   ],
-  exports: [AuthService, JwtAuthGuard],
+  exports: [AuthService, JwtAuthGuard, JwtModule],
 })
 export class AuthModule {}

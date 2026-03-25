@@ -142,3 +142,17 @@ export class UpdateTaskDto {
   @IsIn(TASK_STATUSES)
   status?: (typeof TASK_STATUSES)[number];
 }
+
+export class SubmitReviewDto {
+  @IsIn(['approve', 'request_changes', 'reject'])
+  action!: 'approve' | 'request_changes' | 'reject';
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(4000)
+  comment?: string;
+
+  @IsString()
+  @IsOptional()
+  targetRoleSlug?: string;
+}

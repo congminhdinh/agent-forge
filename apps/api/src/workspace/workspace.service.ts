@@ -3,6 +3,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../users/user.entity';
@@ -18,7 +19,14 @@ import { Project } from './project.entity';
 import { AgentRole } from './role.entity';
 import { serializeProject, serializeRole, serializeTask } from './workspace.serializer';
 import { TaskItem } from './task.entity';
-import { DEFAULT_ROLE_PRESETS, TASK_STATUSES } from './workspace.types';
+import {
+  DEFAULT_ROLE_PRESETS,
+  TASK_STATUS_TRANSITIONS,
+  TASK_STATUSES,
+  TaskMessageRecord,
+  TaskReviewRecord,
+  TaskTransitionRecord,
+} from './workspace.types';
 
 @Injectable()
 export class WorkspaceService {
@@ -201,6 +209,16 @@ export class WorkspaceService {
       modelOverride: body.modelOverride?.trim() ?? null,
       status: 'backlog',
       latestSummary: null,
+      reviewFeedback: null,
+      reviewRequestedRoleSlug: null,
+      githubBranch: null,
+      githubPrNumber: null,
+      githubPrUrl: null,
+      githubStatus: null,
+      githubStatusReason: null,
+      messages: [],
+      reviews: [],
+      transitions: [],
     });
 
     const savedTask = await this.tasksRepository.save(task);
@@ -225,7 +243,11 @@ export class WorkspaceService {
       if (!TASK_STATUSES.includes(body.status)) {
         throw new UnprocessableEntityException('Unsupported task status.');
       }
-      task.status = body.status;
+      await this.transitionTaskStatus(task, body.status, {
+        triggeredBy: 'human',
+        actorId: user.id,
+        reason: 'Updated from the workspace task editor.',
+      });
     }
     if (body.assignedRoleId !== undefined) {
       if (!body.assignedRoleId) {
@@ -259,6 +281,9 @@ export class WorkspaceService {
       throw new NotFoundException('Task not found.');
     }
 
+    task.messages = Array.isArray(task.messages) ? task.messages : [];
+    task.reviews = Array.isArray(task.reviews) ? task.reviews : [];
+    task.transitions = Array.isArray(task.transitions) ? task.transitions : [];
     return task;
   }
 
@@ -284,7 +309,146 @@ export class WorkspaceService {
       throw new NotFoundException('Project not found.');
     }
 
+    project.tasks.forEach((task) => {
+      task.messages = Array.isArray(task.messages) ? task.messages : [];
+      task.reviews = Array.isArray(task.reviews) ? task.reviews : [];
+      task.transitions = Array.isArray(task.transitions) ? task.transitions : [];
+    });
+
     return project;
+  }
+
+  async findRoleBySlug(userId: string, projectId: string, slug: string) {
+    const role = await this.rolesRepository.findOne({
+      where: {
+        slug,
+        project: {
+          id: projectId,
+          user: { id: userId },
+        },
+      },
+      relations: { project: true },
+    });
+
+    if (!role) {
+      throw new NotFoundException(`Role "${slug}" was not found for this project.`);
+    }
+
+    return role;
+  }
+
+  async transitionTaskStatus(
+    task: TaskItem,
+    toStatus: TaskItem['status'],
+    options: {
+      triggeredBy: 'agent' | 'human' | 'system';
+      actorId: string;
+      reason?: string | null;
+    },
+  ) {
+    const fromStatus = task.status;
+    if (fromStatus === toStatus) {
+      return task;
+    }
+
+    const allowed = TASK_STATUS_TRANSITIONS[fromStatus as keyof typeof TASK_STATUS_TRANSITIONS];
+    if (!allowed?.includes(toStatus as never)) {
+      throw new UnprocessableEntityException(
+        `Cannot move a task from "${fromStatus}" to "${toStatus}".`,
+      );
+    }
+
+    task.status = toStatus;
+    task.transitions = [
+      ...(Array.isArray(task.transitions) ? task.transitions : []),
+      {
+        id: randomUUID(),
+        fromStatus,
+        toStatus,
+        triggeredBy: options.triggeredBy,
+        actorId: options.actorId,
+        reason: options.reason ?? null,
+        createdAt: new Date().toISOString(),
+      } satisfies TaskTransitionRecord,
+    ];
+
+    return this.tasksRepository.save(task);
+  }
+
+  async appendTaskMessage(task: TaskItem, message: TaskMessageRecord) {
+    task.messages = [...(Array.isArray(task.messages) ? task.messages : []), message];
+    return this.tasksRepository.save(task);
+  }
+
+  async appendTaskReview(task: TaskItem, review: TaskReviewRecord) {
+    task.reviews = [...(Array.isArray(task.reviews) ? task.reviews : []), review];
+    return this.tasksRepository.save(task);
+  }
+
+  async getUsageFacts(userId: string) {
+    const projects = await this.projectsRepository.find({
+      where: { user: { id: userId } },
+      relations: {
+        user: true,
+        roles: { project: true },
+        tasks: {
+          project: true,
+          assignedRole: { project: true },
+          runs: { task: true, role: { project: true } },
+        },
+      },
+    });
+
+    const tasks = projects.flatMap((project) => project.tasks ?? []);
+    const weekStart = this.startOfUtcWeek();
+    const weeklyTasks = tasks.reduce((count, task) => {
+      const transitions = Array.isArray(task.transitions) ? task.transitions : [];
+      return (
+        count +
+        transitions.filter((transition) => {
+          if (transition?.toStatus !== 'in_progress') {
+            return false;
+          }
+          return new Date(transition.createdAt as string).getTime() >= weekStart.getTime();
+        }).length
+      );
+    }, 0);
+
+    const activeSessions = tasks.filter((task) => task.status === 'in_progress').length;
+    const recentRuns = tasks
+      .flatMap((task) =>
+        (task.runs ?? []).map((run) => ({
+          taskId: task.id,
+          taskTitle: task.title,
+          role: run.role?.displayName ?? run.role?.slug ?? 'Unknown',
+          model: `${run.provider}:${run.model}`,
+          status: run.status,
+          summary: run.summary,
+          durationSec: run.finishedAt
+            ? Math.max(
+                1,
+                Math.round(
+                  (new Date(run.finishedAt).getTime() -
+                    new Date(run.createdAt).getTime()) /
+                    1000,
+                ),
+              )
+            : null,
+          createdAt: run.createdAt,
+          finishedAt: run.finishedAt,
+        })),
+      )
+      .sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+      )
+      .slice(0, 6);
+
+    return {
+      activeSessions,
+      weeklyTasks,
+      recentRuns,
+    };
   }
 
   private async findRole(userId: string, roleId: string) {
@@ -298,5 +462,15 @@ export class WorkspaceService {
     }
 
     return role;
+  }
+
+  private startOfUtcWeek(input = new Date()) {
+    const date = new Date(
+      Date.UTC(input.getUTCFullYear(), input.getUTCMonth(), input.getUTCDate()),
+    );
+    const weekday = (date.getUTCDay() + 6) % 7;
+    date.setUTCDate(date.getUTCDate() - weekday);
+    date.setUTCHours(0, 0, 0, 0);
+    return date;
   }
 }
