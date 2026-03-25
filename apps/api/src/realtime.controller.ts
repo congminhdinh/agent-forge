@@ -47,6 +47,14 @@ export class RealtimeController {
     return this.realtimeService.streamUsage(userId);
   }
 
+  @Sse('notifications')
+  async streamNotifications(
+    @Query('token') token?: string,
+  ): Promise<Observable<MessageEvent>> {
+    const userId = await this.requireUserId(token);
+    return this.realtimeService.streamNotifications(userId);
+  }
+
   private async requireUserId(token?: string) {
     if (!token) {
       throw new UnauthorizedException('A session token is required for realtime streams.');

@@ -41,6 +41,21 @@ export class AgentRun {
   @Column({ type: 'text', nullable: true })
   summary!: string | null;
 
+  @Column({ type: 'int', default: 0 })
+  inputTokens!: number;
+
+  @Column({ type: 'int', default: 0 })
+  outputTokens!: number;
+
+  @Column({ type: 'int', default: 0 })
+  totalTokens!: number;
+
+  @Column({ type: 'float', default: 0 })
+  costUsd!: number;
+
+  @Column({ default: 'estimated' })
+  costSource!: string;
+
   @Column({ type: 'simple-json', default: '[]' })
   filesChanged!: string[];
 
@@ -61,6 +76,9 @@ export class AgentRun {
 
   @Column({ type: 'datetime', nullable: true })
   finishedAt!: Date | null;
+
+  @Column({ type: 'int', nullable: true })
+  durationMs!: number | null;
 
   @CreateDateColumn()
   createdAt!: Date;

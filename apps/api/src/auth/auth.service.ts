@@ -16,6 +16,7 @@ export class AuthService {
   async devLogin(email?: string, displayName?: string) {
     const normalizedEmail = (email ?? 'demo@agentforge.local').toLowerCase();
     const normalizedName = displayName?.trim() || 'Demo User';
+    const existingUsers = await this.usersRepository.count();
     let user = await this.usersRepository.findOne({
       where: { email: normalizedEmail },
     });
@@ -26,6 +27,7 @@ export class AuthService {
         displayName: normalizedName,
         authProvider: 'dev',
         externalId: null,
+        isAdmin: existingUsers === 0,
       });
     } else if (displayName) {
       user.displayName = normalizedName;
@@ -56,6 +58,7 @@ export class AuthService {
         displayName: profile.displayName || profile.username || 'GitHub User',
         authProvider: 'github',
         externalId: profile.id,
+        isAdmin: false,
       });
     } else {
       user.displayName =
@@ -82,6 +85,8 @@ export class AuthService {
         email: user.email,
         displayName: user.displayName,
         authProvider: user.authProvider,
+        isAdmin: user.isAdmin,
+        onboardingCompleted: user.onboardingCompleted,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },

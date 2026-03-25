@@ -55,6 +55,16 @@ export class TasksController {
     return this.agentService.dispatchTask(user, taskId);
   }
 
+  @Post('tasks/:taskId/retry')
+  retryTask(@CurrentUser() user: User, @Param('taskId') taskId: string) {
+    return this.agentService.retryTask(user, taskId);
+  }
+
+  @Post('tasks/:taskId/resume')
+  resumeTask(@CurrentUser() user: User, @Param('taskId') taskId: string) {
+    return this.agentService.resumeTask(user, taskId);
+  }
+
   @Get('tasks/:taskId/reviews')
   listReviews(@CurrentUser() user: User, @Param('taskId') taskId: string) {
     return this.agentService.listReviews(user, taskId);

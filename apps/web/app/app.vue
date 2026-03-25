@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import AdminPanel from './components/AdminPanel.vue';
 import AuthPanel from './components/AuthPanel.vue';
 import ByokPanel from './components/ByokPanel.vue';
 import KanbanBoard from './components/KanbanBoard.vue';
+import NotificationsPanel from './components/NotificationsPanel.vue';
+import OnboardingPanel from './components/OnboardingPanel.vue';
 import ProjectSidebar from './components/ProjectSidebar.vue';
 import RoleStudio from './components/RoleStudio.vue';
+import RoleMarketplacePanel from './components/RoleMarketplacePanel.vue';
 import TaskOutputViewer from './components/TaskOutputViewer.vue';
 import UsagePanel from './components/UsagePanel.vue';
 import { useAgentForge } from './composables/useAgentForge';
@@ -15,9 +19,9 @@ onMounted(() => {
 });
 
 useSeoMeta({
-  title: 'AgentForge Phase 2',
+  title: 'AgentForge Phase 3',
   description:
-    'Multi-agent orchestration, review gating, live updates, and quota visibility.',
+    'Operational dashboard for multi-agent orchestration, recovery, admin controls, notifications, and cost visibility.',
 });
 </script>
 
@@ -38,15 +42,19 @@ useSeoMeta({
       <header class="topbar">
         <div>
           <p class="eyebrow">AgentForge</p>
-          <h1>Phase 2 Review Workspace</h1>
+          <h1>Phase 3 Operations Workspace</h1>
         </div>
         <div class="topbar-meta">
-          <p>{{ app.session.displayName }} Â· {{ app.projectCountLabel }}</p>
+          <p>{{ app.session.displayName }} - {{ app.projectCountLabel }}</p>
           <p>
             {{ app.usage?.sessions.active || 0 }} / {{ app.usage?.sessions.limit || 0 }}
-            sessions Â·
+            sessions -
             {{ app.usage?.weekly_tasks.used || 0 }} / {{ app.usage?.weekly_tasks.limit || 0 }}
             weekly tasks
+          </p>
+          <p>
+            {{ app.unreadNotificationCount }} unread notifications -
+            {{ app.formatCurrency(app.usage?.weekly_cost_usd || 0) }} this week
           </p>
           <p>GitHub OAuth {{ app.githubConfigured ? 'ready' : 'not configured' }}</p>
         </div>
@@ -84,17 +92,31 @@ useSeoMeta({
         />
 
         <aside class="details-column">
+          <OnboardingPanel
+            v-if="app.showOnboarding"
+            :library="app.roleTemplateLibrary"
+            :loading="app.loading"
+            @bootstrap="app.bootstrapSampleProject"
+          />
+
           <TaskOutputViewer
+            :format-currency="app.formatCurrency"
             :format-date="app.formatDate"
             :loading="app.loading"
             :project="app.selectedProject"
             :review-form="app.reviewForm"
             :selected-task="app.selectedTask"
+            @resume-task="app.resumeTask"
+            @retry-task="app.retryTask"
             @submit-review="app.submitReview"
             @update-task="app.updateTask"
           />
 
-          <UsagePanel :format-date="app.formatDate" :usage="app.usage" />
+          <UsagePanel
+            :format-currency="app.formatCurrency"
+            :format-date="app.formatDate"
+            :usage="app.usage"
+          />
 
           <RoleStudio
             :editing-role-id="app.editingRoleId"
@@ -110,6 +132,15 @@ useSeoMeta({
             @save-role="app.saveRole"
           />
 
+          <RoleMarketplacePanel
+            :library="app.roleTemplateLibrary"
+            :loading="app.loading"
+            :role-template-state="app.roleTemplateState"
+            @export-templates="app.exportRoleTemplates"
+            @import-templates="app.importRoleTemplates"
+            @seed-import="app.seedRoleImport"
+          />
+
           <ByokPanel
             :api-keys="app.apiKeys"
             :format-date="app.formatDate"
@@ -117,6 +148,27 @@ useSeoMeta({
             :loading="app.loading"
             @remove-key="app.removeApiKey"
             @save-key="app.saveApiKey"
+          />
+
+          <NotificationsPanel
+            :format-date="app.formatDate"
+            :loading="app.loading"
+            :notification-preferences="app.notificationPreferences"
+            :notifications="app.notifications"
+            :unread-notification-count="app.unreadNotificationCount"
+            @mark-all-read="app.markAllNotificationsRead"
+            @mark-read="app.markNotificationRead"
+            @save-preferences="app.saveNotificationPreferences"
+          />
+
+          <AdminPanel
+            v-if="app.session.isAdmin"
+            :format-currency="app.formatCurrency"
+            :format-date="app.formatDate"
+            :loading="app.loading"
+            :system-stats="app.adminSystemStats"
+            :users="app.adminUsers"
+            @update-user="app.updateAdminUser"
           />
         </aside>
       </section>
@@ -168,6 +220,11 @@ useSeoMeta({
   border-radius: 0.9rem;
   padding: 0.85rem 0.95rem;
   outline: none;
+}
+
+:global(input[type="checkbox"]) {
+  width: auto;
+  justify-self: start;
 }
 
 :global(textarea) {
@@ -428,10 +485,19 @@ useSeoMeta({
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+:global(.stream-item.unread) {
+  border-color: rgba(255, 184, 77, 0.45);
+  background: rgba(255, 184, 77, 0.08);
+}
+
 :global(.usage-grid) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
+}
+
+:global(.admin-grid) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 :global(.usage-stat) {

@@ -2,9 +2,10 @@
 import type {
   ProjectRecord,
   TaskRecord,
-} from '../composables/useAgentForge';
+} from '../composables/agentforge.types';
 
 defineProps<{
+  formatCurrency: (value: number | null | undefined) => string;
   formatDate: (value: string | null | undefined) => string;
   loading: boolean;
   project: ProjectRecord | null;
@@ -16,6 +17,8 @@ defineProps<{
 }>();
 
 defineEmits<{
+  resumeTask: [taskId: string];
+  retryTask: [taskId: string];
   submitReview: [action: 'approve' | 'request_changes' | 'reject'];
   updateTask: [taskId: string, payload: Record<string, unknown>];
 }>();
@@ -73,7 +76,39 @@ defineEmits<{
         <span>Latest provider: {{ selectedTask.runs[0]?.provider || 'none' }}</span>
         <span>Model: {{ selectedTask.runs[0]?.model || 'none' }}</span>
         <span>Sandbox: {{ selectedTask.runs[0]?.sandboxStatus || 'n/a' }}</span>
+        <span>Tokens: {{ selectedTask.runs[0]?.totalTokens || 0 }}</span>
+        <span>Cost: {{ formatCurrency(selectedTask.runs[0]?.costUsd || 0) }}</span>
         <span>Updated: {{ formatDate(selectedTask.runs[0]?.createdAt) }}</span>
+      </div>
+
+      <div class="provider-card">
+        <div class="provider-head">
+          <strong>Recovery</strong>
+          <span>{{ selectedTask.recovery.state }}</span>
+        </div>
+        <p>
+          Retries {{ selectedTask.recovery.retryCount }} / {{ selectedTask.recovery.maxRetries }}
+        </p>
+        <p>{{ selectedTask.recovery.lastFailureReason || 'No failure reason recorded.' }}</p>
+        <p v-if="selectedTask.recovery.deadLetteredAt" class="hint">
+          Dead-lettered {{ formatDate(selectedTask.recovery.deadLetteredAt) }}
+        </p>
+        <div class="button-row">
+          <button
+            class="ghost-button"
+            :disabled="loading || selectedTask.status !== 'blocked'"
+            @click="$emit('resumeTask', selectedTask.id)"
+          >
+            Resume
+          </button>
+          <button
+            class="danger-button"
+            :disabled="loading || selectedTask.status !== 'failed'"
+            @click="$emit('retryTask', selectedTask.id)"
+          >
+            Retry
+          </button>
+        </div>
       </div>
 
       <div v-if="selectedTask.status === 'needs_review'" class="provider-card">

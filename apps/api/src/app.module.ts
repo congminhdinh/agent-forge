@@ -1,12 +1,16 @@
+import { AdminModule } from './admin.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AgentModule } from './agent/agent.module';
 import { AgentRun } from './agent/agent-run.entity';
+import { NotificationRecord } from './notifications/notification.entity';
+import { NotificationsModule } from './notifications/notifications.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { RealtimeController } from './realtime.controller';
+import { RealtimeModule } from './realtime.module';
 import { RealtimeService } from './realtime.service';
 import { ApiKeySetting } from './settings/api-key-setting.entity';
 import { SettingsModule } from './settings/settings.module';
@@ -45,16 +49,20 @@ import { WorkspaceModule } from './workspace/workspace.module';
             AgentRole,
             TaskItem,
             AgentRun,
+            NotificationRecord,
           ],
         };
       },
     }),
+    AdminModule,
     AuthModule,
+    NotificationsModule,
+    RealtimeModule,
     SettingsModule,
     WorkspaceModule,
     AgentModule,
   ],
   controllers: [AppController, RealtimeController, UsageController],
-  providers: [AppService, RealtimeService],
+  providers: [AppService],
 })
 export class AppModule {}

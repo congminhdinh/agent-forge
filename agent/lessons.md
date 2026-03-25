@@ -48,4 +48,14 @@
 ### 2026-03-25
 - Task reference: `mojibake-fix`
 - Category: bug fix
-- `apps/web/app/components/TaskOutputViewer.vue` contained mojibake from mis-encoded separator and arrow glyphs. Replacing them with ASCII-safe text fixed the corrupted view rendering.
+- Phase 2 view files contained mojibake from mis-encoded separator and arrow glyphs. Replacing those literals with ASCII-safe text fixed the corrupted rendering in the current UI surfaces.
+
+### 2026-03-25
+- Task reference: `phase-3-polish-operationalize`
+- Category: feedback
+- Phase 3 is now implemented in-source: onboarding bootstrap, notification preferences and feeds, role template import/export, admin quota controls, task retry and resume paths, and weekly cost telemetry are all wired into the API and Nuxt workspace.
+
+### 2026-03-25
+- Task reference: `phase-3-polish-operationalize`
+- Category: bug fix
+- The SQL.js fallback path did not reliably surface agent run rows through task relations during e2e verification. Mirroring serialized run telemetry into `TaskItem.runHistory` stabilized the Phase 3 review and usage surfaces without removing the relational `AgentRun` records.

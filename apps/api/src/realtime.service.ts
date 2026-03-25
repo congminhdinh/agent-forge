@@ -23,6 +23,10 @@ export class RealtimeService {
     return this.ensureChannel(`usage:${userId}`).asObservable();
   }
 
+  streamNotifications(userId: string): Observable<MessageEvent> {
+    return this.ensureChannel(`notifications:${userId}`).asObservable();
+  }
+
   emitProject(projectId: string, type: string, data: Record<string, unknown>) {
     this.emit(`project:${projectId}`, type, data);
   }
@@ -33,6 +37,10 @@ export class RealtimeService {
 
   emitUsage(userId: string, type: string, data: Record<string, unknown>) {
     this.emit(`usage:${userId}`, type, data);
+  }
+
+  emitNotifications(userId: string, type: string, data: Record<string, unknown>) {
+    this.emit(`notifications:${userId}`, type, data);
   }
 
   private emit(channel: string, type: string, data: Record<string, unknown>) {

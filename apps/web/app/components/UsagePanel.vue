@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { UsageSnapshot } from '../composables/useAgentForge';
+import type { UsageSnapshot } from '../composables/agentforge.types';
 
 defineProps<{
+  formatCurrency: (value: number | null | undefined) => string;
   formatDate: (value: string | null | undefined) => string;
   usage: UsageSnapshot | null;
 }>();
@@ -26,10 +27,18 @@ defineProps<{
           <span>Weekly Tasks</span>
           <strong>{{ usage.weekly_tasks.used }} / {{ usage.weekly_tasks.limit }}</strong>
         </article>
+        <article class="usage-stat">
+          <span>Weekly Cost</span>
+          <strong>{{ formatCurrency(usage.weekly_cost_usd) }}</strong>
+        </article>
+        <article class="usage-stat">
+          <span>Weekly Tokens</span>
+          <strong>{{ usage.weekly_tokens }}</strong>
+        </article>
       </div>
 
       <p class="hint">
-        {{ usage.tier }} tier Â· resets {{ formatDate(usage.weekly_tasks.resetsAt) }}
+        {{ usage.tier }} tier - resets {{ formatDate(usage.weekly_tasks.resetsAt) }}
       </p>
 
       <div class="stack compact">
@@ -42,11 +51,15 @@ defineProps<{
             <strong>{{ session.taskTitle }}</strong>
             <span>{{ session.role }}</span>
           </div>
-          <p class="hint">{{ session.model }} Â· {{ session.status }}</p>
+          <p class="hint">{{ session.model }} - {{ session.status }}</p>
           <p class="hint">{{ session.summary || 'No summary available.' }}</p>
           <p class="hint">
+            Tokens {{ session.totalTokens }} -
+            {{ formatCurrency(session.costUsd) }} ({{ session.costSource }})
+          </p>
+          <p class="hint">
             {{ formatDate(session.createdAt) }}
-            <span v-if="session.durationSec">Â· {{ session.durationSec }}s</span>
+            <span v-if="session.durationSec">- {{ session.durationSec }}s</span>
           </p>
         </div>
       </div>

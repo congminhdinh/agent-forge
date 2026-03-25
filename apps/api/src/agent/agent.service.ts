@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Logger,
   OnModuleDestroy,
   OnModuleInit,
   UnprocessableEntityException,
@@ -14,6 +15,7 @@ import { Queue, Worker } from 'bullmq';
 import { generateText } from 'ai';
 import Handlebars from 'handlebars';
 import { Repository } from 'typeorm';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { RealtimeService } from '../realtime.service';
 import { User } from '../users/user.entity';
@@ -23,6 +25,7 @@ import { SubmitReviewDto } from '../workspace/workspace.dto';
 import { TaskItem } from '../workspace/task.entity';
 import {
   TaskMessageRecord,
+  TaskRecoveryState,
   TaskReviewRecord,
 } from '../workspace/workspace.types';
 import { WorkspaceService } from '../workspace/workspace.service';
@@ -33,6 +36,14 @@ type DispatchJob = {
   userId: string;
 };
 
+type UsageSnapshot = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  costSource: string;
+};
+
 type AgentResult = {
   status: 'completed' | 'failed';
   summary: string | null;
@@ -40,6 +51,14 @@ type AgentResult = {
   filesChanged: string[];
   error: string | null;
   message: TaskMessageRecord;
+  usage: UsageSnapshot;
+};
+
+type ModelExecutionResult = {
+  output: string;
+  error: string | null;
+  usage: Partial<UsageSnapshot> | null;
+  costSource: string;
 };
 
 const DEFAULT_HANDOFFS: Record<string, string | null> = {
@@ -50,8 +69,29 @@ const DEFAULT_HANDOFFS: Record<string, string | null> = {
   reviewer: null,
 };
 
+const MODEL_RATE_CARD: Record<
+  string,
+  { inputPerMillion: number; outputPerMillion: number }
+> = {
+  'openai:gpt-4.1-mini': { inputPerMillion: 0.4, outputPerMillion: 1.6 },
+  'anthropic:claude-3-5-haiku-latest': {
+    inputPerMillion: 0.8,
+    outputPerMillion: 4,
+  },
+};
+
+const PROVIDER_RATE_DEFAULTS: Record<
+  string,
+  { inputPerMillion: number; outputPerMillion: number }
+> = {
+  openai: { inputPerMillion: 0.5, outputPerMillion: 1.5 },
+  anthropic: { inputPerMillion: 1.2, outputPerMillion: 5 },
+  mock: { inputPerMillion: 0, outputPerMillion: 0 },
+};
+
 @Injectable()
 export class AgentService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(AgentService.name);
   private queue: Queue<DispatchJob> | null = null;
   private worker: Worker<DispatchJob> | null = null;
 
@@ -60,6 +100,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
     private readonly workspaceService: WorkspaceService,
     private readonly realtimeService: RealtimeService,
     private readonly settingsService: SettingsService,
+    private readonly notificationsService: NotificationsService,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
     @InjectRepository(AgentRun)
@@ -103,10 +144,66 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
 
     await this.assertCanDispatch(user);
     const fromStatus = task.status;
+    task.recoveryState = 'healthy';
+    task.lastFailureReason = null;
+    task.deadLetteredAt = null;
     await this.workspaceService.transitionTaskStatus(task, 'in_progress', {
       triggeredBy: 'human',
       actorId: user.id,
       reason: 'Queued for multi-agent execution.',
+    });
+    await this.workspaceService.saveTask(task);
+    await this.emitTaskStatus(task, fromStatus, 'in_progress', 'human', user.id);
+
+    if (this.queue) {
+      await this.queue.add('dispatch', { taskId, userId: user.id });
+      return this.workspaceService.getTask(user, taskId);
+    }
+
+    await this.executeWorkflow(user.id, taskId);
+    return this.workspaceService.getTask(user, taskId);
+  }
+
+  async retryTask(user: User, taskId: string) {
+    const task = await this.workspaceService.findTask(user.id, taskId);
+    if (task.status !== 'failed') {
+      throw new UnprocessableEntityException(
+        'Only failed tasks can be retried.',
+      );
+    }
+
+    const fromStatus = task.status;
+    task.retryCount = 0;
+    task.recoveryState = 'healthy';
+    task.lastFailureReason = null;
+    task.deadLetteredAt = null;
+    await this.workspaceService.transitionTaskStatus(task, 'backlog', {
+      triggeredBy: 'human',
+      actorId: user.id,
+      reason: 'Operator requested a workflow retry.',
+    });
+    await this.workspaceService.saveTask(task);
+    await this.emitTaskStatus(task, fromStatus, 'backlog', 'human', user.id);
+    return this.dispatchTask(user, taskId);
+  }
+
+  async resumeTask(user: User, taskId: string) {
+    const task = await this.workspaceService.findTask(user.id, taskId);
+    if (task.status !== 'blocked') {
+      throw new UnprocessableEntityException(
+        'Only blocked tasks can be resumed.',
+      );
+    }
+
+    await this.assertCanDispatch(user);
+    const fromStatus = task.status;
+    task.recoveryState = 'healthy';
+    task.lastFailureReason = null;
+    task.deadLetteredAt = null;
+    await this.workspaceService.transitionTaskStatus(task, 'in_progress', {
+      triggeredBy: 'human',
+      actorId: user.id,
+      reason: 'Operator resumed the blocked workflow.',
     });
     await this.workspaceService.saveTask(task);
     await this.emitTaskStatus(task, fromStatus, 'in_progress', 'human', user.id);
@@ -139,7 +236,8 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         ? body.targetRoleSlug?.trim() ||
           task.reviewRequestedRoleSlug ||
           task.project.roles.find((role) => role.slug === 'developer')?.slug ||
-          task.project.roles[0]?.slug
+          task.project.roles[0]?.slug ||
+          null
         : null;
 
     const reviewRecord: TaskReviewRecord = {
@@ -177,10 +275,12 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
     if (body.action === 'reject') {
       const fromStatus = task.status;
       this.applyGithubDecision(task, 'reject');
+      task.recoveryState = 'retryable';
+      task.lastFailureReason = comment || 'Rejected during the human review gate.';
       await this.workspaceService.transitionTaskStatus(task, 'failed', {
         triggeredBy: 'human',
         actorId: user.id,
-        reason: comment || 'Rejected during the human review gate.',
+        reason: task.lastFailureReason,
       });
       await this.workspaceService.saveTask(task);
       this.realtimeService.emitTask(task.id, 'review_completed', {
@@ -188,6 +288,14 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         action: body.action,
       });
       await this.emitTaskStatus(task, fromStatus, 'failed', 'human', user.id);
+      await this.notificationsService.notifyUser(user.id, {
+        kind: 'task_failed',
+        level: 'warning',
+        title: `Task rejected: ${task.title}`,
+        message: task.lastFailureReason,
+        taskId: task.id,
+        projectId: task.project.id,
+      });
       return this.workspaceService.getTask(user, task.id);
     }
 
@@ -251,7 +359,38 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         limit: user.maxWeeklyTasks,
         resetsAt: this.nextUtcWeekReset().toISOString(),
       },
+      weekly_cost_usd: facts.weeklyCostUsd,
+      weekly_tokens: facts.weeklyTokens,
       recent_sessions: facts.recentRuns,
+    };
+  }
+
+  async getQueueStats() {
+    if (!this.queue) {
+      return {
+        mode: 'local_fallback',
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+      };
+    }
+
+    const counts = await this.queue.getJobCounts(
+      'waiting',
+      'active',
+      'completed',
+      'failed',
+      'delayed',
+    );
+    return {
+      mode: 'redis_bullmq',
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      completed: counts.completed ?? 0,
+      failed: counts.failed ?? 0,
+      delayed: counts.delayed ?? 0,
     };
   }
 
@@ -267,7 +406,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
           triggeredBy: 'system',
           actorId: 'agent-loop-guard',
           reason:
-            'The workflow hit the Phase 2 safety limit for automatic role handoffs.',
+            'The workflow hit the Phase 3 safety limit for automatic role handoffs.',
         });
         await this.workspaceService.saveTask(task);
         await this.emitTaskStatus(
@@ -277,6 +416,15 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
           'system',
           userId,
         );
+        await this.notificationsService.notifyUser(userId, {
+          kind: 'review_requested',
+          level: 'info',
+          title: `Task ready for review: ${task.title}`,
+          message:
+            'The workflow stopped at the automatic handoff safety limit and is waiting for a human review.',
+          taskId: task.id,
+          projectId: task.project.id,
+        });
         break;
       }
 
@@ -290,13 +438,18 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         : ['mock', preference];
 
       let run = this.runsRepository.create({
-        task,
-        role: currentRole,
+        task: { id: task.id } as TaskItem,
+        role: { id: currentRole.id } as AgentRole,
         provider,
         model,
         prompt,
         rawOutput: '',
         summary: null,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        costSource: 'estimated',
         filesChanged: [],
         status: 'running',
         error: null,
@@ -304,10 +457,18 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         sandboxMode: sandbox.mode,
         sandboxStatus: sandbox.status,
         sandboxDetails: sandbox.details,
+        durationMs: null,
         finishedAt: null,
       });
 
       run = await this.runsRepository.save(run);
+      this.logEvent('agent_session_started', {
+        taskId: task.id,
+        sessionId: run.id,
+        role: currentRole.slug,
+        provider,
+        model,
+      });
       this.realtimeService.emitTask(task.id, 'agent_session_started', {
         taskId: task.id,
         sessionId: run.id,
@@ -321,89 +482,142 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         model: `${provider}:${model}`,
       });
 
-      const result = await this.generateAgentOutput(
-        userId,
-        provider,
-        model,
-        prompt,
-        task,
-        currentRole,
-      );
-      run.status = result.status;
-      run.rawOutput = result.output;
-      run.summary = result.summary;
-      run.filesChanged = result.filesChanged;
-      run.error = result.error;
-      run.handoffTarget = result.message.to_role;
-      run.finishedAt = new Date();
-      await this.runsRepository.save(run);
+      const startedAt = Date.now();
+      try {
+        const result = await this.generateAgentOutput(
+          userId,
+          provider,
+          model,
+          prompt,
+          task,
+          currentRole,
+        );
+        run.status = result.status;
+        run.rawOutput = result.output;
+        run.summary = result.summary;
+        run.inputTokens = result.usage.inputTokens;
+        run.outputTokens = result.usage.outputTokens;
+        run.totalTokens = result.usage.totalTokens;
+        run.costUsd = result.usage.costUsd;
+        run.costSource = result.usage.costSource;
+        run.filesChanged = result.filesChanged;
+        run.error = result.error;
+        run.handoffTarget = result.message.to_role;
+        run.durationMs = Math.max(1, Date.now() - startedAt);
+        run.finishedAt = new Date();
+        await this.runsRepository.save(run);
+        await this.workspaceService.updateTaskRunHistory(task, run);
 
-      task.latestSummary = result.summary;
-      if (task.reviewFeedback) {
+        task.latestSummary = result.summary;
         task.reviewFeedback = null;
-      }
-      task.reviewRequestedRoleSlug = null;
-      await this.workspaceService.appendTaskMessage(task, result.message);
+        task.reviewRequestedRoleSlug = null;
+        task.retryCount = 0;
+        task.recoveryState = 'healthy';
+        task.lastFailureReason = null;
+        task.deadLetteredAt = null;
+        await this.workspaceService.appendTaskMessage(task, result.message);
 
-      this.realtimeService.emitTask(task.id, 'agent_message_created', {
-        taskId: task.id,
-        message: result.message,
-      });
-      this.realtimeService.emitProject(task.project.id, 'agent_message_created', {
-        taskId: task.id,
-        message: result.message,
-      });
-      this.realtimeService.emitTask(task.id, 'agent_session_ended', {
-        taskId: task.id,
-        sessionId: run.id,
-        status: run.status,
-        handoffTarget: run.handoffTarget,
-      });
-      this.realtimeService.emitProject(task.project.id, 'agent_session_ended', {
-        taskId: task.id,
-        sessionId: run.id,
-        status: run.status,
-        handoffTarget: run.handoffTarget,
-      });
+        this.realtimeService.emitTask(task.id, 'agent_message_created', {
+          taskId: task.id,
+          message: result.message,
+        });
+        this.realtimeService.emitProject(task.project.id, 'agent_message_created', {
+          taskId: task.id,
+          message: result.message,
+        });
+        this.realtimeService.emitTask(task.id, 'agent_session_ended', {
+          taskId: task.id,
+          sessionId: run.id,
+          status: run.status,
+          handoffTarget: run.handoffTarget,
+        });
+        this.realtimeService.emitProject(task.project.id, 'agent_session_ended', {
+          taskId: task.id,
+          sessionId: run.id,
+          status: run.status,
+          handoffTarget: run.handoffTarget,
+        });
 
-      if (result.status === 'failed') {
+        if (result.status === 'failed') {
+          await this.handleTaskFailure(
+            task,
+            run.id,
+            userId,
+            result.error || 'The agent workflow reported a failure.',
+            'agent',
+          );
+          break;
+        }
+
+        const nextRole = this.resolveNextRole(task, currentRole, result.message);
+        if (nextRole) {
+          task.assignedRole = nextRole;
+          await this.workspaceService.saveTask(task);
+          task = await this.workspaceService.findTask(userId, taskId);
+          continue;
+        }
+
         const fromStatus = task.status;
-        await this.workspaceService.transitionTaskStatus(task, 'failed', {
+        this.applyGithubMetadata(task, result.message.files_changed);
+        await this.workspaceService.transitionTaskStatus(task, 'needs_review', {
           triggeredBy: 'agent',
           actorId: run.id,
-          reason: result.error || 'The agent workflow reported a failure.',
+          reason:
+            result.message.next_action ||
+            `Workflow completed through ${currentRole.displayName} and is waiting for human review.`,
         });
         await this.workspaceService.saveTask(task);
-        await this.emitTaskStatus(task, fromStatus, 'failed', 'agent', userId);
+        await this.emitTaskStatus(
+          task,
+          fromStatus,
+          'needs_review',
+          'agent',
+          userId,
+        );
+        await this.notificationsService.notifyUser(userId, {
+          kind: 'review_requested',
+          level: 'info',
+          title: `Task ready for review: ${task.title}`,
+          message:
+            result.message.next_action ||
+            `${currentRole.displayName} completed the workflow and handed the task to the human review gate.`,
+          taskId: task.id,
+          projectId: task.project.id,
+          metadata: {
+            role: currentRole.slug,
+            costUsd: run.costUsd,
+            totalTokens: run.totalTokens,
+          },
+        });
+        break;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unknown workflow execution error';
+        run.status = 'failed';
+        run.error = message;
+        run.durationMs = Math.max(1, Date.now() - startedAt);
+        run.finishedAt = new Date();
+        await this.runsRepository.save(run);
+        await this.workspaceService.updateTaskRunHistory(task, run);
+        this.realtimeService.emitTask(task.id, 'agent_session_ended', {
+          taskId: task.id,
+          sessionId: run.id,
+          status: run.status,
+          handoffTarget: null,
+        });
+        this.realtimeService.emitProject(task.project.id, 'agent_session_ended', {
+          taskId: task.id,
+          sessionId: run.id,
+          status: run.status,
+          handoffTarget: null,
+        });
+        await this.workspaceService.appendTaskMessage(
+          task,
+          this.buildFailureMessage(currentRole, message),
+        );
+        await this.handleTaskFailure(task, run.id, userId, message, 'system');
         break;
       }
-
-      const nextRole = this.resolveNextRole(task, currentRole, result.message);
-      if (nextRole) {
-        task.assignedRole = nextRole;
-        await this.workspaceService.saveTask(task);
-        task = await this.workspaceService.findTask(userId, taskId);
-        continue;
-      }
-
-      const fromStatus = task.status;
-      this.applyGithubMetadata(task, result.message.files_changed);
-      await this.workspaceService.transitionTaskStatus(task, 'needs_review', {
-        triggeredBy: 'agent',
-        actorId: run.id,
-        reason:
-          result.message.next_action ||
-          `Workflow completed through ${currentRole.displayName} and is waiting for human review.`,
-      });
-      await this.workspaceService.saveTask(task);
-      await this.emitTaskStatus(
-        task,
-        fromStatus,
-        'needs_review',
-        'agent',
-        userId,
-      );
-      break;
     }
   }
 
@@ -419,68 +633,96 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
       provider === 'openai' || provider === 'anthropic'
         ? await this.settingsService.getProviderKey(userId, provider)
         : null;
-    let output: string;
-    let error: string | null = null;
 
+    let execution: ModelExecutionResult;
     if (provider === 'openai' && providerKey) {
-      ({ output, error } = await this.runRemoteModel(
+      execution = await this.runRemoteModel(
         async () => {
           const openai = createOpenAI({ apiKey: providerKey });
           const response = await generateText({
             model: openai(model),
             prompt,
           });
-          return response.text;
+          return {
+            text: response.text,
+            usage: this.extractUsage(response),
+          };
         },
         provider,
         model,
         task,
         currentRole,
-      ));
+      );
     } else if (provider === 'anthropic' && providerKey) {
-      ({ output, error } = await this.runRemoteModel(
+      execution = await this.runRemoteModel(
         async () => {
           const anthropic = createAnthropic({ apiKey: providerKey });
           const response = await generateText({
             model: anthropic(model),
             prompt,
           });
-          return response.text;
+          return {
+            text: response.text,
+            usage: this.extractUsage(response),
+          };
         },
         provider,
         model,
         task,
         currentRole,
-      ));
+      );
     } else {
       const offlineReason = providerKey
-        ? `Provider "${provider}" is unsupported by the Phase 2 router.`
-        : `No ${provider} API key is configured, so the task ran in the local Phase 2 workflow fallback.`;
-      output = this.buildFallbackOutput(task, currentRole, prompt, offlineReason);
+        ? `Provider "${provider}" is unsupported by the Phase 3 router.`
+        : `No ${provider} API key is configured, so the task ran in the local Phase 3 workflow fallback.`;
+      execution = {
+        output: this.buildFallbackOutput(task, currentRole, prompt, offlineReason),
+        error: null,
+        usage: null,
+        costSource: 'estimated',
+      };
     }
 
-    const message = this.normalizeMessage(task, currentRole, output, error);
+    const usage = this.buildUsageSnapshot(
+      provider,
+      model,
+      prompt,
+      execution.output,
+      execution.usage,
+      execution.costSource,
+    );
+    const message = this.normalizeMessage(
+      task,
+      currentRole,
+      execution.output,
+      execution.error,
+    );
+
     return {
       status: 'completed',
-      summary: this.buildSummary(message.output || output),
-      output,
+      summary: this.buildSummary(message.output || execution.output),
+      output: execution.output,
       filesChanged: message.files_changed,
-      error,
+      error: execution.error,
       message,
+      usage,
     };
   }
 
   private async runRemoteModel(
-    runModel: () => Promise<string>,
+    runModel: () => Promise<{ text: string; usage: Partial<UsageSnapshot> | null }>,
     provider: string,
     model: string,
     task: TaskItem,
     currentRole: AgentRole,
-  ) {
+  ): Promise<ModelExecutionResult> {
     try {
+      const response = await runModel();
       return {
-        output: await runModel(),
+        output: response.text,
         error: null,
+        usage: response.usage,
+        costSource: response.usage ? 'provider_usage' : 'estimated',
       };
     } catch (error) {
       const message =
@@ -493,8 +735,75 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
           `Live ${provider}:${model} execution failed with: ${message}`,
         ),
         error: message,
+        usage: null,
+        costSource: 'estimated',
       };
     }
+  }
+
+  private extractUsage(response: unknown): Partial<UsageSnapshot> | null {
+    if (!response || typeof response !== 'object' || !('usage' in response)) {
+      return null;
+    }
+
+    const usage = (response as { usage?: Record<string, unknown> }).usage;
+    if (!usage) {
+      return null;
+    }
+
+    return {
+      inputTokens:
+        typeof usage.inputTokens === 'number' ? usage.inputTokens : undefined,
+      outputTokens:
+        typeof usage.outputTokens === 'number' ? usage.outputTokens : undefined,
+      totalTokens:
+        typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined,
+    };
+  }
+
+  private buildUsageSnapshot(
+    provider: string,
+    model: string,
+    prompt: string,
+    output: string,
+    usage: Partial<UsageSnapshot> | null,
+    costSource: string,
+  ): UsageSnapshot {
+    const inputTokens = usage?.inputTokens ?? this.estimateTokens(prompt);
+    const outputTokens = usage?.outputTokens ?? this.estimateTokens(output);
+    const totalTokens = usage?.totalTokens ?? inputTokens + outputTokens;
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      costUsd: this.estimateCost(provider, model, inputTokens, outputTokens),
+      costSource,
+    };
+  }
+
+  private estimateTokens(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return 0;
+    }
+
+    return Math.max(1, Math.ceil(trimmed.length / 4));
+  }
+
+  private estimateCost(
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+  ) {
+    const rate =
+      MODEL_RATE_CARD[`${provider}:${model}`] ??
+      PROVIDER_RATE_DEFAULTS[provider] ??
+      PROVIDER_RATE_DEFAULTS.mock;
+    const value =
+      (inputTokens / 1_000_000) * rate.inputPerMillion +
+      (outputTokens / 1_000_000) * rate.outputPerMillion;
+    return Math.round(value * 1000000) / 1000000;
   }
 
   private normalizeMessage(
@@ -543,7 +852,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
           createdAt: new Date().toISOString(),
         };
       } catch {
-        // Fall back to default routing below.
+        // Fall through to default routing.
       }
     }
 
@@ -637,7 +946,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
       from_role: currentRole.slug,
       to_role: nextRole?.slug ?? null,
       message_type: nextRole ? 'handoff' : 'status_update',
-      output: `${currentRole.displayName} completed the Phase 2 fallback workflow for "${task.title}".`,
+      output: `${currentRole.displayName} completed the Phase 3 fallback workflow for "${task.title}".`,
       files_changed: [],
       blockers: [],
       next_action: nextRole
@@ -649,7 +958,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
       `Task: ${task.title}`,
       `Role: ${currentRole.displayName}`,
       '',
-      'AgentForge Phase 2 workflow fallback',
+      'AgentForge Phase 3 workflow fallback',
       reason,
       ...(prompt ? ['', 'Rendered prompt:', prompt] : []),
       '',
@@ -694,7 +1003,7 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
         cpuLimit,
         timeoutSec,
         reason:
-          'Docker sandboxing is not configured in this environment, so Phase 2 records the request and falls back to the app workspace.',
+          'Docker sandboxing is not configured in this environment, so Phase 3 records the request and falls back to the app workspace.',
       },
     };
   }
@@ -778,6 +1087,107 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
     return compact.length <= 220 ? compact : `${compact.slice(0, 217)}...`;
   }
 
+  private buildFailureMessage(
+    currentRole: AgentRole,
+    reason: string,
+  ): TaskMessageRecord {
+    return {
+      id: randomUUID(),
+      from_role: currentRole.slug,
+      to_role: null,
+      message_type: 'status_update',
+      output: `Workflow execution stopped during ${currentRole.displayName}.`,
+      blockers: [reason],
+      next_action: 'Inspect the recovery panel and decide whether to resume or retry.',
+      files_changed: [],
+      error_context: { workflowError: reason },
+      metadata: { source: 'phase3-recovery' },
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private async handleTaskFailure(
+    task: TaskItem,
+    actorId: string,
+    userId: string,
+    reason: string,
+    triggeredBy: 'agent' | 'system' | 'human',
+  ) {
+    const recoveryState = this.classifyRecoveryState(reason);
+    const fromStatus = task.status;
+    if (recoveryState === 'blocked') {
+      task.recoveryState = 'blocked';
+      task.lastFailureReason = reason;
+      await this.workspaceService.transitionTaskStatus(task, 'blocked', {
+        triggeredBy,
+        actorId,
+        reason,
+      });
+      await this.workspaceService.saveTask(task);
+      await this.emitTaskStatus(task, fromStatus, 'blocked', triggeredBy, userId);
+      await this.notificationsService.notifyUser(userId, {
+        kind: 'task_blocked',
+        level: 'warning',
+        title: `Task blocked: ${task.title}`,
+        message: reason,
+        taskId: task.id,
+        projectId: task.project.id,
+      });
+      return;
+    }
+
+    task.retryCount += 1;
+    task.lastFailureReason = reason;
+    if (task.retryCount >= task.maxRetries) {
+      task.recoveryState = 'dead_letter';
+      task.deadLetteredAt = new Date();
+    } else {
+      task.recoveryState = 'retryable';
+      task.deadLetteredAt = null;
+    }
+
+    await this.workspaceService.transitionTaskStatus(task, 'failed', {
+      triggeredBy,
+      actorId,
+      reason,
+    });
+    await this.workspaceService.saveTask(task);
+    await this.emitTaskStatus(task, fromStatus, 'failed', triggeredBy, userId);
+    await this.notificationsService.notifyUser(userId, {
+      kind: task.recoveryState === 'dead_letter' ? 'dead_letter' : 'task_failed',
+      level: task.recoveryState === 'dead_letter' ? 'critical' : 'warning',
+      title:
+        task.recoveryState === 'dead_letter'
+          ? `Task dead-lettered: ${task.title}`
+          : `Task failed: ${task.title}`,
+      message: reason,
+      taskId: task.id,
+      projectId: task.project.id,
+      metadata: {
+        retryCount: task.retryCount,
+        maxRetries: task.maxRetries,
+      },
+    });
+  }
+
+  private classifyRecoveryState(reason: string): TaskRecoveryState {
+    const normalized = reason.toLowerCase();
+    const blockedMarkers = [
+      'timeout',
+      'sandbox',
+      'redis',
+      'queue',
+      'network',
+      'connection',
+      'rate limit',
+      'unavailable',
+    ];
+
+    return blockedMarkers.some((marker) => normalized.includes(marker))
+      ? 'blocked'
+      : 'retryable';
+  }
+
   private async assertCanDispatch(user: User) {
     if (user.subscriptionStatus !== 'active') {
       throw new UnprocessableEntityException(
@@ -806,6 +1216,12 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
     triggeredBy: 'agent' | 'human' | 'system',
     userId: string,
   ) {
+    this.logEvent('task_status_changed', {
+      taskId: task.id,
+      fromStatus,
+      toStatus,
+      triggeredBy,
+    });
     this.realtimeService.emitTask(task.id, 'task_status_changed', {
       taskId: task.id,
       fromStatus,
@@ -837,5 +1253,15 @@ export class AgentService implements OnModuleInit, OnModuleDestroy {
     date.setUTCDate(date.getUTCDate() - weekday + 7);
     date.setUTCHours(0, 0, 0, 0);
     return date;
+  }
+
+  private logEvent(event: string, payload: Record<string, unknown>) {
+    this.logger.log(
+      JSON.stringify({
+        event,
+        at: new Date().toISOString(),
+        ...payload,
+      }),
+    );
   }
 }

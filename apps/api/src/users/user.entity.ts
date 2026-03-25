@@ -6,6 +6,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { NotificationRecord } from '../notifications/notification.entity';
 import { ApiKeySetting } from '../settings/api-key-setting.entity';
 import { Project } from '../workspace/project.entity';
 
@@ -38,6 +39,24 @@ export class User {
   @Column({ type: 'int', default: 50 })
   maxWeeklyTasks!: number;
 
+  @Column({ default: false })
+  isAdmin!: boolean;
+
+  @Column({ default: false })
+  onboardingCompleted!: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
+  notificationEmail!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  notificationWebhookUrl!: string | null;
+
+  @Column({ default: false })
+  emailNotificationsEnabled!: boolean;
+
+  @Column({ default: false })
+  webhookNotificationsEnabled!: boolean;
+
   @CreateDateColumn()
   createdAt!: Date;
 
@@ -49,4 +68,7 @@ export class User {
 
   @OneToMany(() => ApiKeySetting, (apiKey) => apiKey.user)
   apiKeys!: ApiKeySetting[];
+
+  @OneToMany(() => NotificationRecord, (notification) => notification.user)
+  notifications!: NotificationRecord[];
 }

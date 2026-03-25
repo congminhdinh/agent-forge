@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { boardColumns, type ProjectRecord, type TaskRecord } from '../composables/useAgentForge';
+import { boardColumns, type ProjectRecord, type TaskRecord } from '../composables/agentforge.types';
 
 defineProps<{
   loading: boolean;
@@ -31,7 +31,10 @@ defineEmits<{
         <p class="eyebrow">Board</p>
         <h2>{{ project?.name || 'Create a project to begin' }}</h2>
       </div>
-      <span class="board-note">Move a task into In Progress to dispatch the multi-agent workflow.</span>
+      <span class="board-note">
+        Move a task into In Progress to dispatch. Blocked and failed lanes now feed
+        the Phase 3 recovery flow.
+      </span>
     </div>
 
     <div class="task-form stack">
@@ -107,7 +110,7 @@ defineEmits<{
           <strong>{{ task.title }}</strong>
           <p>{{ task.latestSummary || task.description || 'No summary yet.' }}</p>
           <div class="task-actions">
-            <span>{{ task.messages.length }} messages Â· {{ task.reviews.length }} reviews</span>
+            <span>{{ task.messages.length }} messages - {{ task.reviews.length }} reviews</span>
             <button class="ghost-button small" @click.stop="$emit('dispatchTask', task.id)">
               Dispatch
             </button>

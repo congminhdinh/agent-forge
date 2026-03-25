@@ -67,6 +67,26 @@ export class CreateRoleDto {
   toolAccessPolicy?: string[];
 }
 
+export class RoleTemplateDto {
+  @IsString()
+  @MaxLength(60)
+  slug!: string;
+
+  @IsString()
+  @MaxLength(80)
+  displayName!: string;
+
+  @IsString()
+  systemPromptTemplate!: string;
+
+  @IsString()
+  modelPreference!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  toolAccessPolicy!: string[];
+}
+
 export class UpdateRoleDto {
   @IsString()
   @IsOptional()
@@ -141,6 +161,26 @@ export class UpdateTaskDto {
   @IsOptional()
   @IsIn(TASK_STATUSES)
   status?: (typeof TASK_STATUSES)[number];
+}
+
+export class ImportRoleTemplatesDto {
+  @IsArray()
+  roles!: RoleTemplateDto[];
+
+  @IsOptional()
+  @IsIn(['merge', 'replace_existing'])
+  mode?: 'merge' | 'replace_existing';
+}
+
+export class BootstrapSampleProjectDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 export class SubmitReviewDto {

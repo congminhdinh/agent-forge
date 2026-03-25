@@ -11,7 +11,11 @@ import {
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { User } from '../users/user.entity';
-import { CreateProjectDto, UpdateProjectDto } from './workspace.dto';
+import {
+  BootstrapSampleProjectDto,
+  CreateProjectDto,
+  UpdateProjectDto,
+} from './workspace.dto';
 import { WorkspaceService } from './workspace.service';
 
 @UseGuards(JwtAuthGuard)
@@ -32,6 +36,14 @@ export class ProjectsController {
   @Post()
   createProject(@CurrentUser() user: User, @Body() body: CreateProjectDto) {
     return this.workspaceService.createProject(user, body);
+  }
+
+  @Post('bootstrap-sample')
+  bootstrapSampleProject(
+    @CurrentUser() user: User,
+    @Body() body: BootstrapSampleProjectDto,
+  ) {
+    return this.workspaceService.bootstrapSampleProject(user, body);
   }
 
   @Patch(':projectId')

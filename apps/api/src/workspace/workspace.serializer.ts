@@ -25,12 +25,18 @@ export const serializeRun = (run: AgentRun) => ({
   prompt: run.prompt,
   rawOutput: run.rawOutput,
   summary: run.summary,
+  inputTokens: run.inputTokens ?? 0,
+  outputTokens: run.outputTokens ?? 0,
+  totalTokens: run.totalTokens ?? 0,
+  costUsd: run.costUsd ?? 0,
+  costSource: run.costSource ?? 'estimated',
   filesChanged: run.filesChanged ?? [],
   error: run.error,
   handoffTarget: run.handoffTarget,
   sandboxMode: run.sandboxMode,
   sandboxStatus: run.sandboxStatus,
   sandboxDetails: run.sandboxDetails,
+  durationMs: run.durationMs,
   finishedAt: run.finishedAt,
   createdAt: run.createdAt,
   updatedAt: run.updatedAt,
@@ -56,13 +62,29 @@ export const serializeTask = (task: TaskItem) => ({
     status: task.githubStatus,
     statusReason: task.githubStatusReason,
   },
-  runs: (task.runs ?? [])
-    .slice()
-    .sort(
-      (left, right) =>
-        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
-    )
-    .map(serializeRun),
+  recovery: {
+    retryCount: task.retryCount ?? 0,
+    maxRetries: task.maxRetries ?? 0,
+    state: task.recoveryState ?? 'healthy',
+    lastFailureReason: task.lastFailureReason ?? null,
+    deadLetteredAt: task.deadLetteredAt ?? null,
+  },
+  runs:
+    task.runs && task.runs.length > 0
+      ? task.runs
+          .slice()
+          .sort(
+            (left, right) =>
+              new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+          )
+          .map(serializeRun)
+      : (task.runHistory ?? [])
+          .slice()
+          .sort(
+            (left, right) =>
+              new Date(String(right.createdAt)).getTime() -
+              new Date(String(left.createdAt)).getTime(),
+          ),
   messages: (task.messages ?? [])
     .slice()
     .sort(

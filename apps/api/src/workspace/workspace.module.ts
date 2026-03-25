@@ -1,7 +1,9 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AgentRun } from '../agent/agent-run.entity';
 import { AgentModule } from '../agent/agent.module';
 import { AuthModule } from '../auth/auth.module';
+import { User } from '../users/user.entity';
 import { Project } from './project.entity';
 import { ProjectsController } from './projects.controller';
 import { AgentRole } from './role.entity';
@@ -13,7 +15,7 @@ import { WorkspaceService } from './workspace.service';
 @Module({
   imports: [
     AuthModule,
-    TypeOrmModule.forFeature([Project, AgentRole, TaskItem]),
+    TypeOrmModule.forFeature([Project, AgentRole, TaskItem, User, AgentRun]),
     forwardRef(() => AgentModule),
   ],
   controllers: [ProjectsController, RolesController, TasksController],

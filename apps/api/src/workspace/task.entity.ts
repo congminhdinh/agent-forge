@@ -64,6 +64,21 @@ export class TaskItem {
   @Column({ type: 'text', nullable: true })
   githubStatusReason!: string | null;
 
+  @Column({ type: 'int', default: 0 })
+  retryCount!: number;
+
+  @Column({ type: 'int', default: 2 })
+  maxRetries!: number;
+
+  @Column({ default: 'healthy' })
+  recoveryState!: string;
+
+  @Column({ type: 'text', nullable: true })
+  lastFailureReason!: string | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  deadLetteredAt!: Date | null;
+
   @Column({ type: 'simple-json', default: '[]' })
   messages!: Array<Record<string, unknown>>;
 
@@ -72,6 +87,9 @@ export class TaskItem {
 
   @Column({ type: 'simple-json', default: '[]' })
   transitions!: Array<Record<string, unknown>>;
+
+  @Column({ type: 'simple-json', default: '[]' })
+  runHistory!: Array<Record<string, unknown>>;
 
   @CreateDateColumn()
   createdAt!: Date;

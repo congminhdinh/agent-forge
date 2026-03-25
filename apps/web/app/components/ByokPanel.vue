@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ApiKeyState } from '../composables/useAgentForge';
+import type { ApiKeyState } from '../composables/agentforge.types';
 
 defineProps<{
   apiKeys: ApiKeyState[];

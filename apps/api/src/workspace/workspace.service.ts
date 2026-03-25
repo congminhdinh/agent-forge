@@ -5,22 +5,31 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import { AgentRun } from '../agent/agent-run.entity';
 import { User } from '../users/user.entity';
 import {
+  BootstrapSampleProjectDto,
   CreateProjectDto,
   CreateRoleDto,
   CreateTaskDto,
+  ImportRoleTemplatesDto,
   UpdateProjectDto,
   UpdateRoleDto,
   UpdateTaskDto,
 } from './workspace.dto';
 import { Project } from './project.entity';
 import { AgentRole } from './role.entity';
-import { serializeProject, serializeRole, serializeTask } from './workspace.serializer';
+import {
+  serializeRun,
+  serializeProject,
+  serializeRole,
+  serializeTask,
+} from './workspace.serializer';
 import { TaskItem } from './task.entity';
 import {
   DEFAULT_ROLE_PRESETS,
+  ROLE_TEMPLATE_LIBRARY,
   TASK_STATUS_TRANSITIONS,
   TASK_STATUSES,
   TaskMessageRecord,
@@ -37,6 +46,10 @@ export class WorkspaceService {
     private readonly rolesRepository: Repository<AgentRole>,
     @InjectRepository(TaskItem)
     private readonly tasksRepository: Repository<TaskItem>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
+    @InjectRepository(AgentRun)
+    private readonly runsRepository: Repository<AgentRun>,
   ) {}
 
   async listProjects(user: User) {
@@ -54,6 +67,7 @@ export class WorkspaceService {
       order: { updatedAt: 'DESC' },
     });
 
+    await this.hydrateTaskRuns(projects.flatMap((project) => project.tasks ?? []));
     return projects.map(serializeProject);
   }
 
@@ -63,28 +77,86 @@ export class WorkspaceService {
   }
 
   async createProject(user: User, body: CreateProjectDto) {
-    const project = this.projectsRepository.create({
-      user,
+    const project = await this.createProjectRecord(user, {
       name: body.name.trim(),
       description: body.description?.trim() ?? '',
       githubRepo: body.githubRepo?.trim() || null,
       githubBranchPrefix: body.githubBranchPrefix?.trim() || 'agentforge/',
     });
 
-    const savedProject = await this.projectsRepository.save(project);
-    const roles = DEFAULT_ROLE_PRESETS.map((preset) =>
-      this.rolesRepository.create({
-        project: savedProject,
-        slug: preset.slug,
-        displayName: preset.displayName,
-        modelPreference: preset.modelPreference,
-        systemPromptTemplate: preset.systemPromptTemplate,
-        toolAccessPolicy: [...preset.toolAccessPolicy],
+    return this.getProject(user, project.id);
+  }
+
+  async bootstrapSampleProject(user: User, body: BootstrapSampleProjectDto) {
+    const project = await this.createProjectRecord(user, {
+      name: body.name?.trim() || 'Starter Forge',
+      description:
+        body.description?.trim() ||
+        'Phase 3 onboarding project with seeded tasks, role templates, and operational controls.',
+      githubRepo: null,
+      githubBranchPrefix: 'agentforge/',
+    });
+
+    const hydrated = await this.findProject(user.id, project.id);
+    const roleBySlug = new Map(
+      hydrated.roles.map((role) => [role.slug, role] as const),
+    );
+
+    const sampleTasks = [
+      {
+        title: 'Map the delivery workflow',
+        description:
+          'Use the architect role to outline the initial delivery, review, and operator workflow.',
+        roleSlug: 'architect',
+        priority: 0,
+      },
+      {
+        title: 'Wire the admin controls',
+        description:
+          'Use the developer role to verify the admin, quota, and system stats surfaces.',
+        roleSlug: 'developer',
+        priority: 1,
+      },
+      {
+        title: 'Check the notification path',
+        description:
+          'Use the tester role to validate review and failure notifications in the starter workspace.',
+        roleSlug: 'tester',
+        priority: 2,
+      },
+    ];
+
+    const created = sampleTasks.map((task) =>
+      this.tasksRepository.create({
+        project: hydrated,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        assignedRole: roleBySlug.get(task.roleSlug) ?? null,
+        modelOverride: null,
+        status: 'backlog',
+        latestSummary: null,
+        reviewFeedback: null,
+        reviewRequestedRoleSlug: null,
+        githubBranch: null,
+        githubPrNumber: null,
+        githubPrUrl: null,
+        githubStatus: null,
+        githubStatusReason: null,
+        retryCount: 0,
+        maxRetries: 2,
+        recoveryState: 'healthy',
+        lastFailureReason: null,
+        deadLetteredAt: null,
+        messages: [],
+        reviews: [],
+        transitions: [],
+        runHistory: [],
       }),
     );
 
-    await this.rolesRepository.save(roles);
-    return this.getProject(user, savedProject.id);
+    await this.tasksRepository.save(created);
+    return this.getProject(user, project.id);
   }
 
   async updateProject(user: User, projectId: string, body: UpdateProjectDto) {
@@ -118,6 +190,74 @@ export class WorkspaceService {
       .slice()
       .sort((left, right) => left.displayName.localeCompare(right.displayName))
       .map(serializeRole);
+  }
+
+  listRoleTemplateLibrary() {
+    return ROLE_TEMPLATE_LIBRARY;
+  }
+
+  async exportRoleTemplates(user: User, projectId: string) {
+    const project = await this.findProject(user.id, projectId);
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      exportedAt: new Date().toISOString(),
+      roles: project.roles
+        .slice()
+        .sort((left, right) => left.displayName.localeCompare(right.displayName))
+        .map((role) => {
+          const template =
+            ROLE_TEMPLATE_LIBRARY.find((entry) => entry.slug === role.slug) ?? null;
+          return {
+            slug: role.slug,
+            displayName: role.displayName,
+            systemPromptTemplate: role.systemPromptTemplate,
+            modelPreference: role.modelPreference,
+            toolAccessPolicy: role.toolAccessPolicy ?? [],
+            summary: template?.summary ?? 'Project-exported role template.',
+            category: template?.category ?? 'project',
+          };
+        }),
+    };
+  }
+
+  async importRoleTemplates(
+    user: User,
+    projectId: string,
+    body: ImportRoleTemplatesDto,
+  ) {
+    if (!Array.isArray(body.roles) || body.roles.length === 0) {
+      throw new UnprocessableEntityException('Provide at least one role template.');
+    }
+
+    const project = await this.findProject(user.id, projectId);
+    for (const template of body.roles) {
+      const existing = project.roles.find((role) => role.slug === template.slug);
+      if (existing && body.mode !== 'replace_existing') {
+        continue;
+      }
+
+      if (existing) {
+        existing.displayName = template.displayName.trim();
+        existing.systemPromptTemplate = template.systemPromptTemplate;
+        existing.modelPreference = template.modelPreference.trim();
+        existing.toolAccessPolicy = template.toolAccessPolicy ?? [];
+        await this.rolesRepository.save(existing);
+        continue;
+      }
+
+      const created = this.rolesRepository.create({
+        project,
+        slug: template.slug.trim(),
+        displayName: template.displayName.trim(),
+        systemPromptTemplate: template.systemPromptTemplate,
+        modelPreference: template.modelPreference.trim(),
+        toolAccessPolicy: template.toolAccessPolicy ?? [],
+      });
+      await this.rolesRepository.save(created);
+    }
+
+    return this.getProject(user, projectId);
   }
 
   async createRole(user: User, projectId: string, body: CreateRoleDto) {
@@ -216,9 +356,15 @@ export class WorkspaceService {
       githubPrUrl: null,
       githubStatus: null,
       githubStatusReason: null,
+      retryCount: 0,
+      maxRetries: 2,
+      recoveryState: 'healthy',
+      lastFailureReason: null,
+      deadLetteredAt: null,
       messages: [],
       reviews: [],
       transitions: [],
+      runHistory: [],
     });
 
     const savedTask = await this.tasksRepository.save(task);
@@ -281,9 +427,11 @@ export class WorkspaceService {
       throw new NotFoundException('Task not found.');
     }
 
+    await this.hydrateTaskRuns([task]);
     task.messages = Array.isArray(task.messages) ? task.messages : [];
     task.reviews = Array.isArray(task.reviews) ? task.reviews : [];
     task.transitions = Array.isArray(task.transitions) ? task.transitions : [];
+    task.runHistory = Array.isArray(task.runHistory) ? task.runHistory : [];
     return task;
   }
 
@@ -309,10 +457,12 @@ export class WorkspaceService {
       throw new NotFoundException('Project not found.');
     }
 
+    await this.hydrateTaskRuns(project.tasks);
     project.tasks.forEach((task) => {
       task.messages = Array.isArray(task.messages) ? task.messages : [];
       task.reviews = Array.isArray(task.reviews) ? task.reviews : [];
       task.transitions = Array.isArray(task.transitions) ? task.transitions : [];
+      task.runHistory = Array.isArray(task.runHistory) ? task.runHistory : [];
     });
 
     return project;
@@ -351,7 +501,8 @@ export class WorkspaceService {
       return task;
     }
 
-    const allowed = TASK_STATUS_TRANSITIONS[fromStatus as keyof typeof TASK_STATUS_TRANSITIONS];
+    const allowed =
+      TASK_STATUS_TRANSITIONS[fromStatus as keyof typeof TASK_STATUS_TRANSITIONS];
     if (!allowed?.includes(toStatus as never)) {
       throw new UnprocessableEntityException(
         `Cannot move a task from "${fromStatus}" to "${toStatus}".`,
@@ -399,6 +550,7 @@ export class WorkspaceService {
       },
     });
 
+    await this.hydrateTaskRuns(projects.flatMap((project) => project.tasks ?? []));
     const tasks = projects.flatMap((project) => project.tasks ?? []);
     const weekStart = this.startOfUtcWeek();
     const weeklyTasks = tasks.reduce((count, task) => {
@@ -416,37 +568,72 @@ export class WorkspaceService {
 
     const activeSessions = tasks.filter((task) => task.status === 'in_progress').length;
     const recentRuns = tasks
-      .flatMap((task) =>
-        (task.runs ?? []).map((run) => ({
+      .flatMap((task) => {
+        const runs =
+          task.runs && task.runs.length > 0
+            ? task.runs.map((run) => serializeRun(run))
+            : task.runHistory ?? [];
+        return runs.map((run) => ({
           taskId: task.id,
           taskTitle: task.title,
-          role: run.role?.displayName ?? run.role?.slug ?? 'Unknown',
-          model: `${run.provider}:${run.model}`,
+          role:
+            typeof run.role === 'object' && run.role
+              ? String((run.role as { displayName?: string; slug?: string }).displayName ??
+                  (run.role as { slug?: string }).slug ??
+                  'Unknown')
+              : 'Unknown',
+          model: `${String(run.provider)}:${String(run.model)}`,
           status: run.status,
           summary: run.summary,
-          durationSec: run.finishedAt
-            ? Math.max(
-                1,
-                Math.round(
-                  (new Date(run.finishedAt).getTime() -
-                    new Date(run.createdAt).getTime()) /
-                    1000,
-                ),
-              )
-            : null,
+          durationSec:
+            typeof run.durationMs === 'number' && run.durationMs > 0
+              ? Math.max(1, Math.round(run.durationMs / 1000))
+              : run.finishedAt
+                ? Math.max(
+                    1,
+                    Math.round(
+                      (new Date(String(run.finishedAt)).getTime() -
+                        new Date(String(run.createdAt)).getTime()) /
+                        1000,
+                    ),
+                  )
+                : null,
+          inputTokens: Number(run.inputTokens ?? 0),
+          outputTokens: Number(run.outputTokens ?? 0),
+          totalTokens: Number(run.totalTokens ?? 0),
+          costUsd: Number(run.costUsd ?? 0),
+          costSource: String(run.costSource ?? 'estimated'),
           createdAt: run.createdAt,
           finishedAt: run.finishedAt,
-        })),
-      )
+        }));
+      })
       .sort(
         (left, right) =>
-          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+          new Date(String(right.createdAt)).getTime() -
+          new Date(String(left.createdAt)).getTime(),
       )
       .slice(0, 6);
+
+    const weeklyRuns = tasks
+      .flatMap((task) =>
+        task.runs && task.runs.length > 0
+          ? task.runs.map((run) => serializeRun(run))
+          : task.runHistory ?? [],
+      )
+      .filter(
+        (run) => new Date(String(run.createdAt)).getTime() >= weekStart.getTime(),
+      );
 
     return {
       activeSessions,
       weeklyTasks,
+      weeklyCostUsd: this.roundCurrency(
+        weeklyRuns.reduce((sum, run) => sum + Number(run.costUsd ?? 0), 0),
+      ),
+      weeklyTokens: weeklyRuns.reduce(
+        (sum, run) => sum + Number(run.totalTokens ?? 0),
+        0,
+      ),
       recentRuns,
     };
   }
@@ -462,6 +649,89 @@ export class WorkspaceService {
     }
 
     return role;
+  }
+
+  private async createProjectRecord(
+    user: User,
+    input: {
+      name: string;
+      description: string;
+      githubRepo: string | null;
+      githubBranchPrefix: string;
+    },
+  ) {
+    const persistedUser = await this.usersRepository.findOneByOrFail({ id: user.id });
+    const project = this.projectsRepository.create({
+      user: persistedUser,
+      name: input.name,
+      description: input.description,
+      githubRepo: input.githubRepo,
+      githubBranchPrefix: input.githubBranchPrefix,
+    });
+
+    const savedProject = await this.projectsRepository.save(project);
+    const roles = DEFAULT_ROLE_PRESETS.map((preset) =>
+      this.rolesRepository.create({
+        project: savedProject,
+        slug: preset.slug,
+        displayName: preset.displayName,
+        modelPreference: preset.modelPreference,
+        systemPromptTemplate: preset.systemPromptTemplate,
+        toolAccessPolicy: [...preset.toolAccessPolicy],
+      }),
+    );
+
+    await this.rolesRepository.save(roles);
+    if (!persistedUser.onboardingCompleted) {
+      persistedUser.onboardingCompleted = true;
+      await this.usersRepository.save(persistedUser);
+    }
+
+    return savedProject;
+  }
+
+  private roundCurrency(value: number) {
+    return Math.round(value * 10000) / 10000;
+  }
+
+  updateTaskRunHistory(task: TaskItem, run: AgentRun) {
+    const serialized = serializeRun(run);
+    const existing = Array.isArray(task.runHistory) ? task.runHistory : [];
+    task.runHistory = [
+      serialized,
+      ...existing.filter((entry) => entry.id !== serialized.id),
+    ].slice(0, 12);
+    return this.tasksRepository.save(task);
+  }
+
+  private async hydrateTaskRuns(tasks: TaskItem[]) {
+    const taskIds = [...new Set(tasks.map((task) => task.id).filter(Boolean))];
+    if (taskIds.length === 0) {
+      return;
+    }
+
+    const runs = await this.runsRepository.find({
+      where: { task: { id: In(taskIds) } },
+      relations: {
+        task: true,
+        role: { project: true },
+      },
+      order: { createdAt: 'DESC' },
+    });
+    const byTaskId = new Map<string, AgentRun[]>();
+    runs.forEach((run) => {
+      const taskId = run.task?.id;
+      if (!taskId) {
+        return;
+      }
+      const existing = byTaskId.get(taskId) ?? [];
+      existing.push(run);
+      byTaskId.set(taskId, existing);
+    });
+
+    tasks.forEach((task) => {
+      task.runs = byTaskId.get(task.id) ?? [];
+    });
   }
 
   private startOfUtcWeek(input = new Date()) {

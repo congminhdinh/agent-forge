@@ -16,11 +16,12 @@ defineEmits<{
 <template>
   <main class="auth-shell">
     <section class="hero-panel">
-      <p class="eyebrow">AgentForge Phase 2</p>
-      <h1>Run multi-agent flows, hold the line at review, and keep the whole chain visible.</h1>
+      <p class="eyebrow">AgentForge Phase 3</p>
+      <h1>Operate the workflow, recover failures, and keep cost, review, and admin controls in one place.</h1>
       <p class="hero-copy">
-        This workspace now tracks inter-agent handoffs, quota usage, human review
-        decisions, and GitHub handoff metadata on the same board.
+        This workspace now adds onboarding, notifications, recovery actions,
+        role-template import or export, admin quota controls, and cost telemetry on top
+        of the existing multi-agent review flow.
       </p>
     </section>
 

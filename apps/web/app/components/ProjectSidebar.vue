@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProjectRecord } from '../composables/useAgentForge';
+import type { ProjectRecord } from '../composables/agentforge.types';
 
 defineProps<{
   loading: boolean;
